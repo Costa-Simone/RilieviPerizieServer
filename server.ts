@@ -13,7 +13,6 @@ import _axios from "axios";
 const _nodemailer = require("nodemailer")
 import _bcrypt from "bcryptjs";
 import _jwt from "jsonwebtoken";
-import { google } from "googleapis"
 
 // Lettura delle password e parametri fondamentali
 _dotenv.config({ "path": ".env" });
@@ -39,15 +38,8 @@ const PRIVATE_KEY = _fs.readFileSync("./keys/privateKey.pem", "utf8");
 const CERTIFICATE = _fs.readFileSync("./keys/certificate.crt", "utf8");
 const SIMMETRIC_KEY = _fs.readFileSync("./keys/encryptionKey.txt", "utf8")
 const CREDENTIALS = { "key": PRIVATE_KEY, "cert": CERTIFICATE };
-const https_server = _https.createServer(CREDENTIALS, app);
 const server = _http.createServer(app)
 
-// Il secondo parametro facoltativo ipAddress consente di mettere il server in ascolto su una delle interfacce della macchina, se non lo metto viene messo in ascolto su tutte le interfacce (3 --> loopback e 2 di rete)
-// https_server.listen(HTTPS_PORT, () => {
-//     init();
-//     console.log(`Server HTTPS in ascolto sulla porta ${HTTPS_PORT}
-//     `);
-// });
 server.listen(HTTPS_PORT, () => {
     init()
 
@@ -111,56 +103,6 @@ const corsOptions = {
    };
 app.use("/", _cors(corsOptions));
 
-// const whitelist = [
-//     "http://corneanugeorgealexandru-crudserver.onrender.com",	// porta 80 (default)
-//     "https://corneanugeorgealexandru-crudserver.onrender.com",	// porta 443 (default)
-//     "http://localhost:3000",
-//     "https://localhost:3001",
-//     "http://localhost:4200",
-//     "http://localhost:8100",
-//     "https://192.168.1.27",
-//     "*" // server angular
-// ];
-// // Procedura che utilizza la whitelist, accetta solo le richieste presenti nella whitelist
-// const corsOptions = {
-//     origin: function (origin, callback) {
-//         if (!origin) // browser direct call
-//             return callback(null, true);
-//         if (whitelist.indexOf(origin) === -1) {
-//             var msg = "The CORS policy for this site does not allow access from the specified Origin."
-//             return callback(new Error(msg), false);
-//         }
-//         else
-//             return callback(null, true);
-//     },
-//     credentials: true
-// };
-// app.use("/", _cors(corsOptions));
-
-// 7. Configurazione di nodemailer
-/*const auth = {
-    "user": process.env.gmailUser,
-    "pass": process.env.gmailPassword,
-}
-const transporter = _nodemailer.createTransport({
-    "service": "gmail",
-    "auth": auth
-});
-let message = _fs.readFileSync("./message.html", "utf8");*/
-
-// 7b. Configurazione di nodemailer con oAuth2
-const o_Auth2 = JSON.parse(process.env.oAuthCredential as any)
-const OAuth2 = google.auth.OAuth2; // Oggetto OAuth2
-const OAuth2Client = new OAuth2(
-    o_Auth2["client_id"],
-    o_Auth2["client_secret"]
-);
-OAuth2Client.setCredentials({
-    refresh_token: o_Auth2.refresh_token,
-});
-
-let message = _fs.readFileSync("./message.html", "utf8");
-
 //8 LOGIN
 app.post("/api/login", async (req, res, next) => {
     let user = req.body.username
@@ -215,36 +157,6 @@ function creaToken(user) {
 
     return _jwt.sign(payLoad, SIMMETRIC_KEY)
 }
-
-// 9. Controllo accesso con Google
-app.post("/api/googleLogin", async (req, res, next) => {
-    if (!req.headers["authorization"]) {
-        res.status(403).send("Token mancante")
-    } else {
-        let token = req.headers["authorization"]
-        let payload = _jwt.decode(token)
-        let username = payload["email"]
-
-        const client = new MongoClient(connectionString)
-        await client.connect()
-        const collection = client.db(DBNAME).collection("mail")
-        let reg = new RegExp(`^${username}$`, "i")
-
-        let rq = collection.findOne({ "username": reg }, { "projection": { "username": 1, "password": 1 } })
-        rq.then(dbUser => {
-            if (!dbUser) {
-                res.status(403).send("Utente non autorizzato all'accesso")
-            } else {
-                let token = creaToken(dbUser)
-
-                res.setHeader("authorization", token)
-                //! Fa si che la header authorization venga restituita al client
-                res.setHeader("access-control-expose-headers", "authorization")
-                res.send({ "ris": "ok" })
-            }
-        })
-    }
-})
 
 // 10. Controllo del token
 app.use("/api/", (req, res, next) => {
