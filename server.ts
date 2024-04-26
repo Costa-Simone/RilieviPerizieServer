@@ -39,7 +39,7 @@ const PRIVATE_KEY = _fs.readFileSync("./keys/privateKey.pem", "utf8");
 const CERTIFICATE = _fs.readFileSync("./keys/certificate.crt", "utf8");
 const SIMMETRIC_KEY = _fs.readFileSync("./keys/encryptionKey.txt", "utf8")
 const CREDENTIALS = { "key": PRIVATE_KEY, "cert": CERTIFICATE };
-// const https_server = _https.createServer(CREDENTIALS, app);
+const https_server = _https.createServer(CREDENTIALS, app);
 const server = _http.createServer(app)
 
 // Il secondo parametro facoltativo ipAddress consente di mettere il server in ascolto su una delle interfacce della macchina, se non lo metto viene messo in ascolto su tutte le interfacce (3 --> loopback e 2 di rete)
@@ -171,7 +171,7 @@ app.post("/api/login", async (req, res, next) => {
     const collection = client.db(DBNAME).collection("users")
     let reg = new RegExp(`^${user}$`, "i")
 
-    let rq = collection.findOne({ "username": reg }, { "projection": { "username": 1, "password": 1, "admin": 1 } })
+    let rq = collection.findOne({ "username": reg })
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data:any) => {
         if (!data) {
@@ -188,10 +188,14 @@ app.post("/api/login", async (req, res, next) => {
                 else {
                     let token = creaToken(data)
                     res.setHeader("authorization", token)
-                    console.log(token)
                     //! Fa si che la header authorization venga restituita al client
                     res.setHeader("access-control-expose-headers", "authorization")
-                    res.send({ "ris": "ok" })
+                    
+                    if(data["firstTime"]) {
+                        res.send({ "ris": "firstTime" })
+                    } else {
+                        res.send({ "ris": "ok" })
+                    }
                 }
             }
         })
@@ -273,6 +277,29 @@ app.use("/api/", (req, res, next) => {
 // Routes finali di risposta al client
 ////
 
+app.post("/api/cambiaPassword", async (req, res, next) => {
+    let user = req.body.user
+    let password = req.body.password
+    let firstTime = req.body.firstTime
+
+    const client = new MongoClient(connectionString)
+    await client.connect()
+    const collection = client.db(DBNAME).collection("users")
+    let request = await collection.findOne({username: user})
+
+    if(firstTime) {
+        firstTime = !firstTime
+    }
+    
+    let rq = collection.updateOne({_id: new ObjectId(request._id)}, {$set: {password: _bcrypt.hashSync(password, 10), firstTime: firstTime}})
+
+    rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
+    rq.then((data) => {
+        res.send(data)
+    })
+    rq.finally(() => client.close())
+})
+
 app.get("/api/users", async (req, res, next) => {
     const client = new MongoClient(connectionString)
     await client.connect()
@@ -305,9 +332,6 @@ app.post("/api/editUser/:id", async (req, res, next) => {
     await client.connect()
     const collection = client.db(DBNAME).collection("users")
     let user = req.body
-    if(user["password"]) {
-        user["password"] = _bcrypt.hashSync(user["password"], 10)
-    }
     let rq = collection.updateOne({_id: new ObjectId(id)}, {$set: user})
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data) => {
@@ -375,7 +399,6 @@ app.post("/api/editPerizia/:id", async (req, res, next) => {
     request.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     request.then(data => {
         let count = data.photos.length
-        let nomePhoto = []
         const vettUguali = (v1: any[], v2: any[]) => v1.every((c) => v2.includes(c)) && v1.length == v2.length;
 
         if(vettUguali(perizia.photos, data.photos)) {
@@ -385,14 +408,26 @@ app.post("/api/editPerizia/:id", async (req, res, next) => {
             rq.finally(() => client.close());
         } else {
             if(count > 0) {
-                perizia.photos.forEach((photo) => {
-                    if(!photo.includes("RilieviPerizie")) {
-                        _cloudinary.v2.uploader.upload(photo, { "folder": "RilieviPerizie" })
-                        .catch((err) => {
-                            res.status(500).send(`Error while uploading file on Cloudinary: ${err}`);
-                        })
-                        .then(async function (response: UploadApiResponse) {
-                            aus.push(response.secure_url)
+                if(perizia.photos.length > 0) {
+                    perizia.photos.forEach((photo) => {
+                        if(!photo.includes("RilieviPerizie")) {
+                            _cloudinary.v2.uploader.upload(photo, { "folder": "RilieviPerizie" })
+                            .catch((err) => {
+                                res.status(500).send(`Error while uploading file on Cloudinary: ${err}`);
+                            })
+                            .then(async function (response: UploadApiResponse) {
+                                aus.push(response.secure_url)
+        
+                                if(aus.length == perizia.photos.length) {
+                                    perizia.photos = aus
+                                    let rq = collection.updateOne({_id: new ObjectId(id)}, {$set: perizia});
+                                    rq.then((data) => res.send(data));
+                                    rq.catch((err) => res.status(500).send(`Errore esecuzione query: ${err}`));
+                                    rq.finally(() => client.close());
+                                }
+                            });
+                        } else {
+                            aus.push(photo)
     
                             if(aus.length == perizia.photos.length) {
                                 perizia.photos = aus
@@ -401,19 +436,14 @@ app.post("/api/editPerizia/:id", async (req, res, next) => {
                                 rq.catch((err) => res.status(500).send(`Errore esecuzione query: ${err}`));
                                 rq.finally(() => client.close());
                             }
-                        });
-                    } else {
-                        aus.push(photo)
-
-                        if(aus.length == perizia.photos.length) {
-                            perizia.photos = aus
-                            let rq = collection.updateOne({_id: new ObjectId(id)}, {$set: perizia});
-                            rq.then((data) => res.send(data));
-                            rq.catch((err) => res.status(500).send(`Errore esecuzione query: ${err}`));
-                            rq.finally(() => client.close());
                         }
-                    }
-                })
+                    })
+                } else {
+                    let rq = collection.updateOne({_id: new ObjectId(id)}, {$set: perizia});
+                    rq.then((data) => res.send(data));
+                    rq.catch((err) => res.status(500).send(`Errore esecuzione query: ${err}`));
+                    rq.finally(() => client.close());
+                }
             } else {
                 perizia.photos.forEach((photo) => {
                     _cloudinary.v2.uploader.upload(photo, { "folder": "RilieviPerizie" })
@@ -480,6 +510,19 @@ app.post("/api/addPerizia", async (req, res, next) => {
         rq.finally(() => client.close());
     }
 });
+
+app.delete("/api/deletePerizia/:id", async (req, res, next) => {
+    let id = req.params.id
+    const client = new MongoClient(connectionString)
+    await client.connect()
+    const collection = client.db(DBNAME).collection("perizie")
+    let rq = collection.deleteOne({_id: new ObjectId(id)})
+    rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
+    rq.then((data) => {
+        res.send(data)
+    })
+    rq.finally(() => client.close())
+})
 
 ////
 // Default route e gestione degli errori
