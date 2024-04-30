@@ -131,7 +131,7 @@ app.post("/api/newMail", async (req, res, next) => {
 
             let mailOptions = {
                 "from": auth.user,
-                "to": "s.costa.2235@vallauri.edu",
+                "to": data.email,
                 "subject": "Cambio password",
                 //"html": req["body"].message,
                 "html": message,
