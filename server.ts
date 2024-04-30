@@ -68,6 +68,89 @@ function init() {
 }
 
 ////
+// Socket
+////
+
+var WebSocketServer = require('websocket').server;
+
+var wsServer = new WebSocketServer({
+    httpServer: server,
+    // You should not use autoAcceptConnections for production
+    // applications, as it defeats all standard cross-origin protection
+    // facilities built into the protocol and the browser.  You should
+    // *always* verify the connection's origin and decide whether or not
+    // to accept it.
+    autoAcceptConnections: false
+});
+
+function originIsAllowed(origin) {
+    // put logic here to detect whether the specified origin is allowed.
+    return true;
+}
+
+wsServer.on('request', function(request) {
+    let users = []
+    let admin
+
+    if (!originIsAllowed(request.origin)) {
+      // Make sure we only accept requests from an allowed origin
+      request.reject();
+      console.log((new Date()) + ' Connection from origin ' + request.origin + ' rejected.');
+      return;
+    }
+    
+    var connection = request.accept('echo-protocol', request.origin);
+
+    connection.on('message', function(message) {
+        if (message.type === 'utf8') {
+            console.log('Received Message: ' + message.utf8Data);
+            let msg = JSON.parse(message.utf8Data)
+            
+            if(msg.status == "online") {
+                const client = new MongoClient(connectionString)
+                client.connect()
+                let collection = client.db(DBNAME).collection("users")
+                let rq = collection.updateOne({username: msg.user}, {$set: {status: msg.status}})
+                rq.catch((err) => { console.log("Errore esecuzione query " + err.message) })
+                rq.then(data => {
+                    if(msg.user == "admin") {
+                        admin = connection
+                    }
+
+                    console.log("Utente " + msg.user + " è " + msg.status)
+                    users.push({user: msg.user, address: connection.remoteAddress})
+
+                    if(admin != null) {
+                        admin.send(JSON.stringify("update"))
+                    }
+                })
+                rq.finally(() => client.close())
+            }
+        }
+        else if (message.type === 'binary') {
+            console.log('Received Binary Message of ' + message.binaryData.length + ' bytes');
+            connection.send(message.binaryData);
+        }
+    });
+    connection.on('close', function(reasonCode, description) {
+        console.log((new Date()) + ' Peer ' + connection.remoteAddress + ' disconnected.');
+        let user = users.find((u) => u.address == connection.remoteAddress)
+
+        const client = new MongoClient(connectionString)
+        client.connect()
+        let collection = client.db(DBNAME).collection("users")
+        let rq = collection.updateOne({username: user.user}, {$set: {status: "offline"}})
+        rq.catch((err) => { console.log("Errore esecuzione query " + err.message) })
+        rq.then(data => {
+            console.log("Utente " + user.user + " è offline")
+            users.splice(users.indexOf(user), 1)
+            connection.send("update")
+        })
+        rq.finally(() => client.close())
+    });
+});
+
+////
 // Routes middleware
 ////
 
@@ -298,7 +381,7 @@ app.get("/api/users", async (req, res, next) => {
     const client = new MongoClient(connectionString)
     await client.connect()
     const collection = client.db(DBNAME).collection("users")
-    let rq = collection.find({}, { projection: { _id: 1, username: 1, admin: 1, email: 1 } }).toArray()
+    let rq = collection.find({}, { projection: { _id: 1, username: 1, admin: 1, email: 1, status: 1 } }).toArray()
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data) => {
         res.send(data)
