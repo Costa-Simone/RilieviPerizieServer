@@ -70,15 +70,20 @@ function init() {
 ////
 // Socket
 ////
+// origin: function (origin, callback) {
+//     return callback(null, true);
+// },
+// credentials: true
 
 const io = require("socket.io")(server, {
     cors: {
-      origin: ["http://localhost:4200", "http://localhost:8100"],
-      methods: ["GET", "POST"],
-      allowedHeaders: ["my-custom-header"],
+      origin: function(origin, callback) {
+        return callback(null, true);
+      },
       credentials: true
     }
-  });
+});
+
 let users = [];
 
 io.on('connection', function (clientSocket) {
@@ -88,7 +93,7 @@ io.on('connection', function (clientSocket) {
         if(!users.includes(user)) {
             users.push({user: user, id: clientSocket.id})
         }
-
+        console.log(user)
         clientSocket.join("admin")
         
         const client = new MongoClient(connectionString)
