@@ -71,83 +71,64 @@ function init() {
 // Socket
 ////
 
-var WebSocketServer = require('websocket').server;
-
-var wsServer = new WebSocketServer({
-    httpServer: server,
-    // You should not use autoAcceptConnections for production
-    // applications, as it defeats all standard cross-origin protection
-    // facilities built into the protocol and the browser.  You should
-    // *always* verify the connection's origin and decide whether or not
-    // to accept it.
-    autoAcceptConnections: false
-});
-
-function originIsAllowed(origin) {
-    // put logic here to detect whether the specified origin is allowed.
-    return true;
-}
-
-wsServer.on('request', function(request) {
-    let users = []
-    let admin
-
-    if (!originIsAllowed(request.origin)) {
-      // Make sure we only accept requests from an allowed origin
-      request.reject();
-      console.log((new Date()) + ' Connection from origin ' + request.origin + ' rejected.');
-      return;
+const io = require("socket.io")(server, {
+    cors: {
+      origin: ["http://localhost:4200", "http://localhost:8100"],
+      methods: ["GET", "POST"],
+      allowedHeaders: ["my-custom-header"],
+      credentials: true
     }
-    
-    var connection = request.accept('echo-protocol', request.origin);
+  });
+let users = [];
 
-    connection.on('message', function(message) {
-        if (message.type === 'utf8') {
-            console.log('Received Message: ' + message.utf8Data);
-            let msg = JSON.parse(message.utf8Data)
-            
-            if(msg.status == "online") {
-                const client = new MongoClient(connectionString)
-                client.connect()
-                let collection = client.db(DBNAME).collection("users")
-                let rq = collection.updateOne({username: msg.user}, {$set: {status: msg.status}})
-                rq.catch((err) => { console.log("Errore esecuzione query " + err.message) })
-                rq.then(data => {
-                    if(msg.user == "admin") {
-                        admin = connection
-                    }
+io.on('connection', function (clientSocket) {
+    let users = []
 
-                    console.log("Utente " + msg.user + " è " + msg.status)
-                    users.push({user: msg.user, address: connection.remoteAddress})
-
-                    if(admin != null) {
-                        admin.send(JSON.stringify("update"))
-                    }
-                })
-                rq.finally(() => client.close())
-            }
+    clientSocket.on("online", async user => {
+        if(!users.includes(user)) {
+            users.push({user: user, id: clientSocket.id})
         }
-        else if (message.type === 'binary') {
-            console.log('Received Binary Message of ' + message.binaryData.length + ' bytes');
-            connection.send(message.binaryData);
-        }
-    });
-    connection.on('close', function(reasonCode, description) {
-        console.log((new Date()) + ' Peer ' + connection.remoteAddress + ' disconnected.');
-        let user = users.find((u) => u.address == connection.remoteAddress)
 
+        clientSocket.join("admin")
+        
         const client = new MongoClient(connectionString)
-        client.connect()
-        let collection = client.db(DBNAME).collection("users")
-        let rq = collection.updateOne({username: user.user}, {$set: {status: "offline"}})
-        rq.catch((err) => { console.log("Errore esecuzione query " + err.message) })
+        await client.connect()
+        const collection = client.db(DBNAME).collection("users")
+        let rq = collection.findOne({ username: user})
         rq.then(data => {
-            console.log("Utente " + user.user + " è offline")
-            users.splice(users.indexOf(user), 1)
-            connection.send("update")
+            let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "online" } })
+            request.then(response => {
+                if(data.admin == false) {
+                    clientSocket.to("admin").emit("update", "update")
+                }
+            })
+            request.finally(() => client.close())
         })
-        rq.finally(() => client.close())
-    });
+    })
+    
+    clientSocket.on("disconnect", async function () {
+        let aus = users.find((u) => u.id == clientSocket.id)
+
+        if(aus != null) {
+            users.splice(users.indexOf(aus), 1)
+
+            if(aus.user == "admin") {
+                clientSocket.leave("admin")
+            }
+
+            const client = new MongoClient(connectionString)
+            await client.connect()
+            const collection = client.db(DBNAME).collection("users")
+            let rq = collection.findOne({ username: aus.user})
+            rq.then(data => {
+                let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "offline" } })
+                request.then(data => {
+                    clientSocket.to("admin").emit("update", "update")
+                })
+                request.finally(() => client.close())
+            })
+        }
+    })
 });
 
 ////
