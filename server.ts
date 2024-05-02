@@ -26,6 +26,7 @@ _cloudinary.v2.config({
 
 // Variabili relative a MongoDB ed Express
 import { MongoClient, ObjectId } from "mongodb";
+import { admin } from "googleapis/build/src/apis/admin";
 const DBNAME = process.env.DBNAME;
 const connectionString: string = process.env.connectionStringAtlas as any
 const app = _express();
@@ -93,7 +94,7 @@ io.on('connection', function (clientSocket) {
         if(!users.includes(user)) {
             users.push({user: user, id: clientSocket.id})
         }
-        console.log(user)
+
         clientSocket.join("admin")
         
         const client = new MongoClient(connectionString)
@@ -101,11 +102,13 @@ io.on('connection', function (clientSocket) {
         const collection = client.db(DBNAME).collection("users")
         let rq = collection.findOne({ username: user})
         rq.then(data => {
-            let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "online" } })
-            request.then(response => {
-                clientSocket.to("admin").emit("update", "update")
-            })
-            request.finally(() => client.close())
+            if(data != null) {
+                let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "online" } })
+                request.then(response => {
+                    clientSocket.to("admin").emit("update", "update")
+                })
+                request.finally(() => client.close())
+            }
         })
     })
     
@@ -120,15 +123,19 @@ io.on('connection', function (clientSocket) {
             const collection = client.db(DBNAME).collection("users")
             let rq = collection.findOne({ username: aus.user})
             rq.then(data => {
-                let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "offline" } })
-                request.then(data => {
-                    clientSocket.to("admin").emit("update", "update")
-
-                    if(aus.user == "admin") {
-                        clientSocket.leave("admin")
-                    }
-                })
-                request.finally(() => client.close())
+                if(data != null) {
+                    let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "offline" } })
+                    request.then(data => {
+                        clientSocket.to("admin").emit("update", "update")
+    
+                        if(aus.user == "admin") {
+                            clientSocket.leave("admin")
+                        }
+                    })
+                    request.finally(() => client.close())
+                } else {
+                    client.close()
+                }
             })
         }
     })
@@ -182,7 +189,6 @@ app.use("/", _cors(corsOptions));
 
 app.post("/api/newMail", async (req, res, next) => {
     let password = generatePassword(8, { lowercase: true, uppercase: true, numbers: true, symbols: false })
-    console.log(password)
     let user = req.body.user
 
     const client = new MongoClient(connectionString)
@@ -205,7 +211,6 @@ app.post("/api/newMail", async (req, res, next) => {
             }
             
             transporter.sendMail(mailOptions, (err, info) => {
-                console.log(info);
                 if (err) {
                     res.status(500).send(`Errore invio mail:\n${err.message}`);
                 }
@@ -232,31 +237,33 @@ app.post("/api/login", async (req, res, next) => {
     let rq = collection.findOne({ "username": reg })
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data: any) => {
-        if (!data) {
+        if (data == null) {
             res.status(401).send("Username non trovato")
-        }
-        _bcrypt.compare(pass, data["password"], (err, result) => {
-            if (err) {
-                res.status(500).send("bcrypt compare error" + err.message)
-            }
-            else {
-                if (!result) {
-                    res.status(401).send("Password errata")
+        } else {
+            _bcrypt.compare(pass, data["password"], (err, result) => {
+                if (err) {
+                    res.status(500).send("bcrypt compare error" + err.message)
                 }
                 else {
-                    let token = creaToken(data)
-                    res.setHeader("authorization", token)
-                    //! Fa si che la header authorization venga restituita al client
-                    res.setHeader("access-control-expose-headers", "authorization")
-
-                    if (data["firstTime"]) {
-                        res.send({ "ris": "firstTime" })
-                    } else {
-                        res.send({ "ris": "ok" })
+                    if (!result) {
+                        res.status(401).send("Password errata")
+                    }
+                    else {
+                        let token = creaToken(data)
+                        res.setHeader("authorization", token)
+                        //! Fa si che la header authorization venga restituita al client
+                        res.setHeader("access-control-expose-headers", "authorization")
+    
+                        let aus = {
+                            firstTime: data.firstTime,
+                            admin: data.admin,
+                        }
+    
+                        res.send(aus)
                     }
                 }
-            }
-        })
+            })
+        }
     })
     rq.finally(() => client.close())
 })
@@ -409,9 +416,13 @@ app.post("/api/deleteUser/:id", async (req, res, next) => {
     let rq = collection.deleteOne({ _id: new ObjectId(id) })
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data) => {
-        res.send(data)
+        let coll = client.db(DBNAME).collection("perizie")
+        let request = coll.updateMany({operator: id}, {$set: {operator: "65e9ed7a3110b815a08aa77a"}})
+        request.then(data => {
+            res.send(data)
+        })
+        request.finally(() => client.close())
     })
-    rq.finally(() => client.close())
 })
 
 app.get("/api/perizie", async (req, res, next) => {
@@ -434,17 +445,21 @@ app.get("/api/perizieByUser", async (req, res, next) => {
     let rq = collection.findOne({ username: user }, { projection: { _id: 1, username: 1, admin: 1, email: 1 } })
     rq.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message) })
     rq.then((data) => {
-        let coll = client.db(DBNAME).collection("perizie")
-        let request = coll.find({ operator: data["_id"].toString() }).toArray()
-        request.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message); client.close() })
-        request.then((perizie) => {
-            let req = coll.findOne({ title: "Vallauri" })
-            req.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message); client.close() })
-            req.then(aus => {
-                perizie.push(aus)
-                res.send(perizie)
+        if(data != null) {
+            let coll = client.db(DBNAME).collection("perizie")
+            let request = coll.find({ operator: data["_id"].toString() }).toArray()
+            request.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message); client.close() })
+            request.then((perizie) => {
+                let req = coll.findOne({ title: "Vallauri" })
+                req.catch((err) => { res.status(500).send("Errore esecuzione query " + err.message); client.close() })
+                req.then(aus => {
+                    perizie.push(aus)
+                    res.send(perizie)
+                })
             })
-        })
+        } else {
+            res.status(501).send("Utente non disponibile")
+        }
     })
 })
 
