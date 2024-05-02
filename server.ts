@@ -103,9 +103,7 @@ io.on('connection', function (clientSocket) {
         rq.then(data => {
             let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "online" } })
             request.then(response => {
-                if(data.admin == false) {
-                    clientSocket.to("admin").emit("update", "update")
-                }
+                clientSocket.to("admin").emit("update", "update")
             })
             request.finally(() => client.close())
         })
@@ -117,10 +115,6 @@ io.on('connection', function (clientSocket) {
         if(aus != null) {
             users.splice(users.indexOf(aus), 1)
 
-            if(aus.user == "admin") {
-                clientSocket.leave("admin")
-            }
-
             const client = new MongoClient(connectionString)
             await client.connect()
             const collection = client.db(DBNAME).collection("users")
@@ -129,6 +123,10 @@ io.on('connection', function (clientSocket) {
                 let request = collection.updateOne({ _id: new ObjectId(data._id) }, { $set: { status: "offline" } })
                 request.then(data => {
                     clientSocket.to("admin").emit("update", "update")
+
+                    if(aus.user == "admin") {
+                        clientSocket.leave("admin")
+                    }
                 })
                 request.finally(() => client.close())
             })
